@@ -1,0 +1,171 @@
+;---------------------------------------------------------------------;
+; Team 5 : Doug Petty/Jeremy Dalton                                   ;
+; ECE 3730                                                            ;
+; Lab 3b                                                              ;
+; 10/01/2014                                                          ;
+;---------------------------------------------------------------------;
+
+;Data section
+;----------------------------------------------------------------------
+TA      EQU     $0800           ;Storage location for acceleration time
+TC      EQU     $0802           ;Storage location for time of constant velocity
+TT      EQU     $0804           ;Storage loaction for total time
+COUNT   EQU     $000A           ;Count is 10 for computing data corresponding to time intervals
+CONST_V EQU     $080A           ;Memory location to get constant velocity
+TIME_T  EQU     $080C           ;Memory location to get total time
+DELTA_V EQU     $0806           ;Storage location for delta velocity after computing it
+        ORG     $900
+ACCEL   FDB     $0000           ;Storing the value of acceleration in 2 bytes starting at memory location $900
+INT_VEL FDB     $0000           ;Storing the value of delta velocity per interval(10)
+        ORG     $4000           ;Memory location for 60 bytes of data for the right motor
+MTR_R   RMB     $3C
+        ORG     $4100           ;Memory location for 60 bytes of data for the left motor
+MTR_L   RMB     $3C
+PRINTF  EQU     $F686
+GETC    EQU     $F682
+PUTC    EQU     $F684
+VSTR    FCB     'PLEASE CHOOSE A CONSTANT VELOCITY:',$0D,$0A,$00
+TSTR    FCB     'PLEAASE CHOOSE A TIME PERIOD:',$0D,$0A,$00
+CSTR    FCB     'HIGH (1), MEDIUM (2), OR LOW (3)',$0D,$0A,$00
+HDR1    FCB     '          MOTOR CONTROL SOFTWARE',$0D,$0A,$00
+HDR2    FCB     '          VELOCITY PROFILE',$0D,$0A,$00
+VAL	FCB	'VELOCITY %u: %X',$0D,$0A,$00
+ONE     FCB     '1'
+TWO     FCB     '2'
+THREE   FCB     '3'
+HIGH    EQU     $2710
+MED     EQU     $03E8
+LOW     EQU     $0064
+
+
+;Main section
+;----------------------------------------------------------------------
+        ORG     $4200           ;
+        LDS     #$8000          ;Initialize stack
+        LDD     #HDR1
+        LDX     PRINTF
+        JSR     0,X
+        LDD     #VSTR
+        LDX     PRINTF
+        JSR     0,X
+        LDD     #CSTR
+        LDX     PRINTF
+        JSR     0,X
+        LDX     GETC
+        JSR     0,X
+        LDX     PUTC
+        JSR     0,X
+        CMPB    #ONE
+        
+        LDD     TIME_T          ;Load value from address of time t to reg. D
+        LDY     CONST_V         ;Load value from address of const. velocity to reg. Y
+        JSR     TRPZD           ;Jump to the subroutine that computes velocity trapezoid
+        JSR     VELCTY          ;Jump to the subrouting that computes and stores the velocity of each interval
+	LDX	#MTR_R		;Load the address of the right motor array
+	JSR	PRINT		;Jump to the subroutine that prints the values in a formatted string
+        JMP     QUIT            ;Jump to the END opcode
+
+;---------------------------------------------------------------------;
+; Trapezoid sub function                                              ;
+; Computes Accel, Constant, and Decel time periods, or ta & tc        ;
+; Accel and Decel are each 20% of total time                          ;
+; Stores ta, tc, total_t beginning at $0800                           ;
+; Computes delta velocity to provide linear accel and decel           ;
+; Stores delta velocity beginning at $0806                            ;
+;---------------------------------------------------------------------;
+TRPZD   PSHY               ;PUSH VELOCITY TO STACK FOR LATER USE
+        STD     TT         ;STORE THE TOTAL TIME TO TT LOCATION
+        LDX     #5         ;LOAD DIVISOR OF 5 TO GET 20% OF TIME
+        IDIV               ;QUOTIENT(20% OF TIME) STORED IN X
+        STX     TA         ;STORE THE 20% TO TA
+        LDD     #4         ;TIMES 20% BY 4 TO GET TC(80%)
+        LDY     TA         ;LOAD 20% INTO REG. Y
+        EMUL
+        STD     TC         ;STORE THE LOWER 16 BITS FROM THE MUL. TO TC
+        ;------NOW COMPUTE ACCELERATION-----------
+        PULD               ;GET VELOCITY FROM STACK(DELTA V)
+        LDX     TA         ;GET DELTA T FROM(EQUAL TO TA)
+        IDIV               ;DELTA V/DELTA T EQUALS ACCEL
+        STX     ACCEL      ;STORE ACCELERATION IN ACCEL
+        ;------NOW COMPUTE DELTA V -------------
+        LDD     ACCEL      ;LOAD ACCEL VALUE TO D
+        LDY     TA         ;LOAD THE TIME INTERVAL
+        EMULS              ;DELTA_V IS EQUAL TO ACCEL x DELTA TIME
+        STD     DELTA_V
+        RTS
+
+;---------------------------------------------------------------------;
+; Compute velocity sub routine                                        ;
+; Uses Delta_V to compute 30 different velocity values.               ;
+; 10 for the accel, 10 for constant velocity and 10 for decel.        ;
+; These values are stored at $4000 for the right motore and $4100 for ;
+; the left motor.                                                     ;
+;---------------------------------------------------------------------;
+VELCTY  LDD     DELTA_V
+        LDX     #COUNT     ;COUNT IS THE NUMBER OF INTERVALS TO DIVIDE DELTA_V BY
+        IDIV               ;X CONTAINS THE DELTA V PER INTERVAL
+        STX     INT_VEL    ;STORE ONE INTERVAL TO THE TOTAL
+        LDY     #MTR_R     ;ADDRESS OF RIGHT MOTOR INTO X
+        LDD     #$0000     ;INITIAL VALUE OF ZERO TO  D
+        LDX     #COUNT     ;LOAD COUNT INTO REG A FOR LOOPING
+A_INTVL CPX     #$0000     ;COMPARE REG A TO ZERO
+        BEQ     CONST      ;BRANCH TO CONSTANT VELOCITY INTERVALS
+        DEX
+        PSHD               ;PUSH INTERVAL VELOCITY TO STACK FOR USE IN DECEL LOOP
+        STD     100,Y      ;STORE THE VELOCITY TO LEFT MOTOR
+        STD     $2,Y+      ;STORE THE VELOCITY TO RIGHT MOTOR, THEN INCREMENT ADDRESS BY 2 BYTES
+        ADDD    INT_VEL    ;ADD INTERVAL VELOCITY TO TOTAL
+        BRA     A_INTVL    ;LOOP THROUGH ACCEL COMPUTATION AGAIN
+CONST   LDX     #COUNT     ;START CODE FOR CONSTANT VELOCITY INTERVALS, LOAD REG X WITH 10 AGAIN
+
+C_INTVL CPX     #$0000     ;START OF LOOP FOR LOADING CONST. VEL. INTERVALS TO MEMEORY
+        BEQ     DECEL      ;BRANCH TO NEXT SECTION IF REG X IS ZERO
+        DEX                ;DECREMENT COUNT IN REG X
+        STD     100,Y      ;STORE THE VALUE IN REG D TO ADDRESS LOCATION IN Y + 100(LEFT MOTOR)
+        STD     $2,Y+      ;STROE THE VELOCITY VALUE TO RIGHT MOTOR
+        BRA     C_INTVL    ;KEEP LOOPING UNTIL REG X IS ZERO
+DECEL   LDX     #COUNT     ;START THE DECEL SECTION, LOAD REG X WITH 10 AGAIN
+D_INTVL CPX     #$0000     ;COMPARE REG X TO ZERO
+        BEQ     VEL_END    ;BRANCH TO END IF REG X IS ZERO
+        DEX                ;DECREMENT REG X
+        PULD               ;PULL THE INTERVAL VELOCITY VALUE FROM THE STACK TO REG D
+        STD     100,Y      ;STORE TO MEMORY OF LEFT MOTOR
+        STD     $2,Y+      ;STORE TO MEMORY OF RIGHT MOTOR, INCREMENT Y BY 2 BYTES
+        BRA     D_INTVL    ;DO IT AGAIN
+VEL_END RTS
+
+
+;---------------------------------------------------------------------;
+; Print Value sub routine           	                                ;
+; USES:D,X,Y						                                              ;
+; PURPOSE: Uses the call-by-reference model to print the values of    ;
+; the array that were computed in the second subroutine	in a	        ;
+; formatted string. EX: VELOCITY 1: 0			                            ;
+;---------------------------------------------------------------------;
+
+PRINT PSHY                ;THE VALUE OF I
+	    LDD	      0,X       ;THE FIRST VALUE OF THE ARRAY
+	    PSHX		            ;STORE THE BASE ADDRESS ON THE STACK
+	    PSHD		            ;PARAM 1 TO BE PRINTED
+	    INY		              ;
+	    PSHY		            ;PARAM 2 TO BE PRINTED (I + 1)
+	    LDD	      #VAL	    ;FORMATTED STRING TO BE PRINTED
+	    LDX	      PRINTF	  ;THE ADDRESS OF THE ADDRESS FOR THE PRINTF SUBROUTINE
+	    JSR	      0,X	      ;PRINT THE FORMATTED STRING
+	    LEAS	    4,SP	    ;POP PARAM 1 AND PARAM 2 OFF THE STACK
+	    PULX		            ;RESTORE THE BASE ADDRESS FROM THE STACK
+	    PULY		            ;RESTORE I FROM THE STACK
+	    CPY	      #1E       ;HAVE WE PRINTED ALL 30 VALUES?
+	    BEQ	      DONE      ;JUMP OUT OF THE LOOP IF WE ARE DONE
+	    INY		              ;I++
+	    INX		              ;
+	    INX		              ;POINT X TO THE NEXT ELEMENT OF THE ARRAY
+	    BRA	      PRINT     ;START OVER AT THE BEGINNING
+DONE	RTS		              ;WE ARE FINISHED
+	
+
+;---------------------------------------------------------------------;
+QUIT    END
+	SWI
+
+
